@@ -7,12 +7,11 @@ import random
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-
 from aiohttp import web
 from telethon import TelegramClient, events
 
 # === НАСТРОЙКИ ===
-CHANNELS = ["me", "kyiv_airdef", "kyiv_sky_watch", "kyiv_airdefence", "kievdenger", "kievinform_ua1"]
+CHANNELS = ["me", "kyiv_airdef", "kyiv_sky_watch", "kyiv_airdefence", "kievdenger", "kievinform_ua1", "+oE9PYyVuiHw5Yzkx"]
 API_ID = 34997598
 API_HASH = os.getenv("TG_API_HASH", "2478fc8e7a7f32ed5710b8fd97051c99")
 SESSION_NAME = "my_map_session"
@@ -24,6 +23,7 @@ log = logging.getLogger("radar")
 
 client = TelegramClient(str(BASE_DIR / SESSION_NAME), API_ID, API_HASH)
 
+# === КЛЮЧЕВЫЕ СЛОВА ===
 KEYWORDS = ['балистика', 'балістика', 'баллистика', 'шахед', 'ракета', 'калібр', 'кинджал', 'искандер',
             'курс', 'движется', 'цілі', 'ціль', 'над', 'кр', 'х-101', 'х-59', 'с-300', 'с-400', 'ц-400',
             'бандерол', 's8000', 'реактивн', 'герань-3', 'герань 3', 'shahed-238', 'герань-5', 'герань 5',
@@ -41,13 +41,24 @@ TYPE_KEYWORDS = {
     'drone': ['шахед', 'бпла', 'герань', 'shahed'],
 }
 
-SPEEDS = {'drone': 200, 'jet_drone': 550, 'cruise_missile': 850, 'ballistic': 10000, 'banderol': 550}
+# Ускоренные скорости (чтобы цели не летели 4 часа)
+SPEEDS = {'drone': 800, 'jet_drone': 1500, 'cruise_missile': 2000, 'ballistic': 5000, 'banderol': 1500}
+
+# Точки старта (добавлены приграничные, чтобы не висели в тылу)
 ORIGIN_POINTS = {
     'ballistic': [('курск', (51.7373, 36.1874)), ('миллерово', (48.9226, 40.4013)), ('крым', (45.3453, 34.4997))],
     'cruise_missile': [('брянск', (53.2434, 34.3639)), ('саратов', (51.5333, 46.0333))],
-    'drone': [('курск', (51.7373, 36.1874)), ('брянск', (53.2434, 34.3639)), ('крым', (45.3453, 34.4997))]
+    'drone': [
+        ('курск', (51.7373, 36.1874)), 
+        ('брянск', (53.2434, 34.3639)), 
+        ('крым', (45.3453, 34.4997)),
+        ('суми', (50.9077, 34.7981)),
+        ('чернігів', (51.4982, 31.2893)),
+        ('харків', (49.9935, 36.2304))
+    ]
 }
 
+# Базовые города (OSM дополнит их при запуске)
 CITIES = {
     'курск': (51.7373, 36.1874), 'брянск': (53.2434, 34.3639), 'миллерово': (48.9226, 40.4013),
     'крым': (45.3453, 34.4997), 'джанкой': (45.7086, 34.3931), 'беларусь': (53.7098, 27.9534),
@@ -73,12 +84,17 @@ CITIES = {
     'козин': (50.1800, 30.6500), 'ржищів': (49.9700, 30.9500)
 }
 
+# Подгружаем OSM данные
 if (BASE_DIR / "cities.json").exists():
-    with open(BASE_DIR / "cities.json", "r", encoding="utf-8") as f:
-        for row in json.load(f):
-            name_lower = row["name"].lower()
-            if name_lower not in CITIES:
-                CITIES[name_lower] = (row["lat"], row["lon"])
+    try:
+        with open(BASE_DIR / "cities.json", "r", encoding="utf-8") as f:
+            for row in json.load(f):
+                name_lower = row["name"].lower()
+                if name_lower not in CITIES:
+                    CITIES[name_lower] = (row["lat"], row["lon"])
+        log.info(f"Loaded {len(CITIES)} cities from cities.json")
+    except Exception as e:
+        log.error(f"Error loading cities.json: {e}")
 
 active_targets = {}
 target_counter = 1
@@ -141,24 +157,41 @@ async def on_new_message(event):
     chat = await event.get_chat()
     channel_name = getattr(chat, 'username', getattr(chat, 'title', str(chat.id)))
 
+    # 1. Отбой
     if any(w in text_lower for w in CLEAR_WORDS):
         active_targets.clear()
         last_context = {'type': 'drone', 'time': 0}
         await broadcast({"type": "targets_update", "targets": []})
         return
 
+    # 2. Сбито
     if any(w in text_lower for w in DESTROY_WORDS):
         found_dests = [name for name in CITIES.keys() if name in text_lower]
-        for dest in found_dests:
+        # Исправление бага с подстроками
+        final_dests = []
+        for name in sorted(found_dests, key=len, reverse=True):
+            if not any(name in longer for longer in final_dests):
+                final_dests.append(name)
+
+        for dest in final_dests:
             for tid, data in list(active_targets.items()):
                 if dest in data['name']:
                     del active_targets[tid]
         await broadcast({"type": "targets_update", "targets": list(active_targets.values())})
         return
 
-    found_dests = [name for name in CITIES.keys() if name in text_lower]
+    # 3. Ищем цели (с защитой от подстрок вроде "вари" в "бровари")
+    found_dests_raw = [name for name in CITIES.keys() if name in text_lower]
+    
+    # Сортируем по длине (сначала длинные) и убираем те, что являются частью других
+    found_dests = []
+    for name in sorted(found_dests_raw, key=len, reverse=True):
+        if not any(name in longer for longer in found_dests):
+            found_dests.append(name)
+
     if not found_dests: return
 
+    # 4. Определяем тип цели (с контекстом)
     target_type = None
     for t, words in TYPE_KEYWORDS.items():
         if any(w in text_lower for w in words):
@@ -173,9 +206,7 @@ async def on_new_message(event):
         else:
             target_type = 'drone'
 
-    origins = ORIGIN_POINTS.get(target_type, ORIGIN_POINTS['drone'])
-    origin_loc, origin_coords = random.choice(origins)
-
+    # 5. Определяем количество
     target_count = 1
     if any(w in text_lower for w in ['десяток', '10']): target_count = 10
     elif any(w in text_lower for w in ['групова', 'группа', 'багато']): target_count = 4
@@ -184,25 +215,41 @@ async def on_new_message(event):
     elif any(w in text_lower for w in ['чотири', '4']): target_count = 4
     elif any(w in text_lower for w in ['п\'ять', '5']): target_count = 5
 
+    # 6. Создаем цели
     for dest_loc in found_dests:
         base_dest_coords = CITIES[dest_loc]
         
         for _ in range(target_count):
+            # Выбираем случайный старт
+            origins = ORIGIN_POINTS.get(target_type, ORIGIN_POINTS['drone'])
+            origin_loc, origin_coords = random.choice(origins)
+
+            # Разброс финальной точки
             off_lat = random.uniform(-0.05, 0.05) if target_count > 1 else 0
             off_lng = random.uniform(-0.05, 0.05) if target_count > 1 else 0
             dest_coords = (base_dest_coords[0] + off_lat, base_dest_coords[1] + off_lng)
 
-            base_speed = SPEEDS.get(target_type, 200)
+            base_speed = SPEEDS.get(target_type, 800)
             dist = haversine(origin_coords[0], origin_coords[1], dest_coords[0], dest_coords[1])
             eta = max(1, round((dist / base_speed) * 60))
+
+            # Магия: Сдвигаем старт ближе к цели (чтобы не висели над РФ)
+            mid_lat = origin_coords[0] + (dest_coords[0] - origin_coords[0]) * 0.5 
+            mid_lng = origin_coords[1] + (dest_coords[1] - origin_coords[1]) * 0.5
+            
+            if dest_loc in ['київ', 'бровари', 'бориспіль', 'осокорки', 'позняки']:
+                mid_lat = origin_coords[0] + (dest_coords[0] - origin_coords[0]) * 0.7
+                mid_lng = origin_coords[1] + (dest_coords[1] - origin_coords[1]) * 0.7
+                
+            final_origin = (mid_lat + random.uniform(-0.02, 0.02), mid_lng + random.uniform(-0.02, 0.02))
 
             new_id = f"t_{now.strftime('%H%M%S')}_{target_counter}"
             active_targets[new_id] = {
                 'id': new_id, 'name': f"Ціль #{target_counter} ({dest_loc})", 
-                'lat': origin_coords[0], 'lng': origin_coords[1],
+                'lat': final_origin[0], 'lng': final_origin[1],
                 'prev_lat': None, 'prev_lng': None, 'last_update': now.isoformat(), 
                 'type': target_type, 'text': text[:100], 'speed_kmh': base_speed, 'eta_mins': eta, 
-                'origin': origin_loc, 'origin_coords': origin_coords, 'dest_coords': dest_coords,
+                'origin': origin_loc, 'origin_coords': final_origin, 'dest_coords': dest_coords,
                 'total_flight_mins': eta, 'launch_time': now.isoformat(), 'channel': channel_name
             }
             target_counter += 1
@@ -212,29 +259,24 @@ async def on_new_message(event):
 
     await broadcast({"type": "targets_update", "targets": list(active_targets.values())})
 
-# === AIOHTTP СЕРВЕР ===
 async def websocket_handler(request):
     ws = web.WebSocketResponse()
     await ws.prepare(request)
     clients.add(ws)
     try:
         await ws.send_str(json.dumps({"type": "init", "targets": list(active_targets.values()), "history": history}, ensure_ascii=False))
-        async for msg in ws:
-            pass
-    finally:
-        clients.discard(ws)
+        async for msg in ws: pass
+    finally: clients.discard(ws)
     return ws
 
 async def index_handler(request):
     path = BASE_DIR / "map.html"
-    if not path.exists():
-        return web.Response(text="map.html not found", status=404)
+    if not path.exists(): return web.Response(text="map.html not found", status=404)
     return web.FileResponse(path)
 
 async def cities_handler(request):
     path = BASE_DIR / "cities.json"
-    if not path.exists():
-        return web.Response(text="cities.json not found. Run build_cities.py first.", status=404)
+    if not path.exists(): return web.Response(text="cities.json not found", status=404)
     return web.FileResponse(path)
 
 def create_app():
