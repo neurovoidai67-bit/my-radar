@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RADAR 24/7 | Ukraine</title>
+    
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    
+    <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" />
+    <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css" />
+    <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@400;600;700&display=swap');
+        body, html { margin: 0; padding: 0; height: 100%; background-color: #0b0f19; font-family: 'Montserrat', sans-serif; overflow: hidden; color: #fff; }
+        #map { height: 100vh; width: 100vw; background-color: #0b0f19; z-index: 1; }
+        .leaflet-tile-pane { filter: grayscale(100%) invert(100%) brightness(80%) contrast(120%); }
+        
+        .marker-cluster-small, .marker-cluster-medium, .marker-cluster-large { background-color: rgba(0, 204, 255, 0.4) !important; border-radius: 50%; box-shadow: 0 0 15px #00ccff; }
+        .marker-cluster-small div, .marker-cluster-medium div, .marker-cluster-large div { background-color: #00ccff !important; color: #000 !important; font-weight: bold !important; font-family: 'Montserrat' !important; box-shadow: inset 0 0 10px rgba(0,0,0,0.5) !important; }
+
+        .panel { background: rgba(10, 15, 30, 0.95); border: 1px solid #1a2a4a; border-radius: 12px; box-shadow: 0 10px 30px rgba(0,0,0,0.8); transition: border-color 0.3s; }
+        .panel.alert-active { border-color: #ff4d4d; box-shadow: 0 0 30px rgba(255, 77, 77, 0.6); animation: alert-pulse 1s infinite alternate; }
+        @keyframes alert-pulse { from { box-shadow: 0 0 10px rgba(255, 77, 77, 0.4); } to { box-shadow: 0 0 30px rgba(255, 77, 77, 0.8); } }
+
+        #top-left-bar { position: absolute; top: 20px; left: 20px; z-index: 1000; display: flex; align-items: center; gap: 20px; }
+        #logo { font-size: 20px; font-weight: 700; color: #fff; display: flex; align-items: center; gap: 10px; text-shadow: 0 0 10px rgba(111, 168, 255, 0.5); }
+        #clock-box { background: rgba(10, 15, 30, 0.85); border: 1px solid #1a2a4a; padding: 5px 15px; border-radius: 8px; font-size: 14px; font-weight: bold; color: #6fa8ff; box-shadow: 0 4px 10px rgba(0,0,0,0.5); }
+        #clock-date { font-size: 10px; color: #888; text-align: center; }
+
+        #right-panel { position: absolute; top: 20px; right: 20px; width: 290px; padding: 15px; z-index: 1000; }
+        .stats-header { font-size: 12px; color: #6fa8ff; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 5px; }
+        .total-count { font-size: 36px; font-weight: 700; color: #fff; margin-bottom: 15px; }
+        .legend-title { font-size: 12px; font-weight: 700; color: #6fa8ff; margin-bottom: 10px; text-transform: uppercase; letter-spacing: 1px; border-bottom: 1px solid #1a2a4a; padding-bottom: 5px; }
+        .legend-item { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; font-size: 13px; color: #ccc; padding: 8px 10px; border-radius: 6px; cursor: pointer; background: #111a2e; transition: background 0.2s, opacity 0.2s; }
+        .legend-item:hover { background: #1a2a4a; }
+        .legend-item.disabled { opacity: 0.4; }
+        .legend-left { display: flex; align-items: center; }
+        .legend-icon { width: 24px; height: 24px; margin-right: 10px; display: flex; justify-content: center; align-items: center; }
+        .legend-count { font-weight: 700; color: #fff; background: #1a2a4a; padding: 2px 8px; border-radius: 10px; font-size: 12px; }
+
+        #event-log { position: absolute; bottom: 20px; left: 20px; width: 450px; overflow: hidden; z-index: 1000; display: flex; flex-direction: column; transition: height 0.3s ease-in-out; height: 250px; }
+        #event-log.collapsed { height: 40px; }
+        .log-header { display: flex; justify-content: space-between; align-items: center; padding: 10px 15px; background: rgba(15, 25, 45, 0.9); border-bottom: 1px solid #1a2a4a; cursor: pointer; border-radius: 12px 12px 0 0; }
+        .log-header span { font-size: 12px; color: #6fa8ff; text-transform: uppercase; font-weight: bold; }
+        .log-content { flex: 1; overflow-y: auto; padding: 10px; font-family: 'Consolas', monospace; font-size: 12px; display: flex; flex-direction: column; gap: 4px; }
+        .event-item { padding: 6px 8px; border-left: 3px solid #1a2a4a; background: transparent; cursor: pointer; transition: background 0.2s; display: flex; align-items: center; gap: 8px; border-bottom: 1px solid rgba(255,255,255,0.05); }
+        .event-item:hover { background: #111a2e; border-left-color: #6fa8ff; }
+
+        .custom-icon { display: flex; justify-content: center; align-items: center; transition: transform 0.5s ease-out; }
+        .target-label { position: absolute; left: 35px; top: 5px; font-size: 11px; line-height: 1.2; color: #6fa8ff; text-shadow: 1px 1px 2px #000, 0 0 5px #000; white-space: nowrap; pointer-events: none; font-family: 'Consolas', monospace; font-weight: 600; display: flex; flex-direction: column; }
+        .target-label .name { color: #00ccff; font-size: 12px; font-weight: bold; }
+        .target-label .speed { color: #fff; font-size: 10px; }
+
+        .leaflet-popup-content-wrapper { background-color: rgba(10, 15, 30, 0.97); color: #fff; border: 1px solid #2a4a7a; border-radius: 8px; }
+        .leaflet-popup-tip { background-color: rgba(10, 15, 30, 0.97); }
+    </style>
+</head>
+<body>
+
+<div id="map"></div>
+
+<div id="top-left-bar">
+    <div id="logo"><span style="color: #6fa8ff;">▲</span> RADAR 24/7</div>
+    <div id="clock-box">
+        <div id="clock-time">--:--:--</div>
+        <div id="clock-date">--.--.----</div>
+    </div>
+</div>
+
+<div id="right-panel" class="panel">
+    <div class="stats-header">Всього цілей</div>
+    <div class="total-count" id="total-targets">0</div>
+    
+    <div class="legend-title">Фільтри</div>
+    
+    <div class="legend-item" id="filter-drone" onclick="toggleFilter('drone')">
+        <div class="legend-left"><div class="legend-icon"><svg width="20" height="20" viewBox="0 0 24 24"><path d="M12 2 L16 20 L12 16 L8 20 Z" fill="#00ccff" stroke="#111" stroke-width="1.5"/></svg></div><span>Шахед</span></div>
+        <div class="legend-count" id="count-drone">0</div>
+    </div>
+    <div class="legend-item" id="filter-jet" onclick="toggleFilter('jet_drone')">
+        <div class="legend-left"><div class="legend-icon"><svg width="20" height="20" viewBox="0 0 24 24"><path d="M12 2 L15 9 L22 12 L15 15 L12 22 L9 15 L2 12 L9 9 Z" fill="#ff00ff" stroke="#111" stroke-width="1.5"/></svg></div><span>Реактивний</span></div>
+        <div class="legend-count" id="count-jet">0</div>
+    </div>
+    <div class="legend-item" id="filter-cruise" onclick="toggleFilter('cruise_missile')">
+        <div class="legend-left"><div class="legend-icon"><svg width="20" height="20" viewBox="0 0 24 24"><path d="M12 2 L15 12 L18 15 L15 16 L13 22 L11 22 L9 16 L6 15 L9 12 Z" fill="#ffcc00" stroke="#111" stroke-width="1.5"/></svg></div><span>Крилата</span></div>
+        <div class="legend-count" id="count-cruise">0</div>
+    </div>
+    <div class="legend-item" id="filter-ballistic" onclick="toggleFilter('ballistic')">
+        <div class="legend-left"><div class="legend-icon"><svg width="20" height="20" viewBox="0 0 24 24"><path d="M12 2 L15 10 L12 22 L9 10 Z" fill="#ff0000" stroke="#fff" stroke-width="1.5"/></svg></div><span>Балістика</span></div>
+        <div class="legend-count" id="count-ballistic">0</div>
+    </div>
+</div>
+
+<div id="event-log" class="panel">
+    <div class="log-header" onclick="toggleLog()">
+        <span>Останні події</span>
+    </div>
+    <div class="log-content" id="tab-events">
+        <div style="color: #444; text-align: center; padding: 10px;">[ Очікування даних... ]</div>
+    </div>
+</div>
+
+<script>
+    const map = L.map('map', { zoomControl: false }).setView([49.0, 31.0], 6);
+    L.control.zoom({ position: 'bottomright' }).addTo(map);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map);
+
+    const cityLayer = L.markerClusterGroup({ maxClusterRadius: 40, disableClusteringAtZoom: 10 }).addTo(map);
+    const targetLayer = L.layerGroup().addTo(map);
+    let currentTargets = {};
+    let allTargetsData = [];
+
+    setInterval(() => {
+        const now = new Date();
+        document.getElementById('clock-time').innerText = now.toLocaleTimeString('uk-UA');
+        document.getElementById('clock-date').innerText = now.toLocaleDateString('uk-UA');
+    }, 1000);
+
+    function toggleLog() { document.getElementById('event-log').classList.toggle('collapsed'); }
+
+    async function loadCities() {
+        try {
+            const res = await fetch("/cities.json");
+            if (!res.ok) return;
+            const rows = await res.json();
+            const filtered = rows.filter(r => r.place_type === "city" || r.place_type === "town");
+            
+            filtered.forEach(row => {
+                const marker = L.circleMarker([row.lat, row.lon], {
+                    radius: 2, color: '#43bde8', fillColor: '#43bde8', fillOpacity: 0.5, weight: 1
+                });
+                marker.bindTooltip(row.name, { direction: "top" });
+                cityLayer.addLayer(marker);
+            });
+        } catch(e) { console.log("cities.json not found or failed to load."); }
+    }
+
+    function getIcon(type, name, speed) {
+        let typeLabel = type === 'ballistic' ? 'Балістика' : (type === 'cruise_missile' ? 'Крилата' : (type === 'jet_drone' ? 'Реактивний' : 'Шахед'));
+        let color = type === 'ballistic' ? '#ff0000' : (type === 'cruise_missile' ? '#ffcc00' : (type === 'jet_drone' ? '#ff00ff' : '#00ccff'));
+        
+        let svg = `<svg viewBox="0 0 24 24" fill="${color}" stroke="#111" stroke-width="1.5"><path d="M12 2 L16 20 L12 16 L8 20 Z" /></svg>`;
+        if (type === 'ballistic') svg = `<svg viewBox="0 0 24 24" fill="${color}" stroke="#fff" stroke-width="1.5"><path d="M12 2 L15 10 L12 22 L9 10 Z" /></svg>`;
+        if (type === 'jet_drone') svg = `<svg viewBox="0 0 24 24" fill="${color}" stroke="#111" stroke-width="1.5"><path d="M12 2 L15 9 L22 12 L15 15 L12 22 L9 15 L2 12 L9 9 Z" /></svg>`;
+        if (type === 'cruise_missile') svg = `<svg viewBox="0 0 24 24" fill="${color}" stroke="#111" stroke-width="1.5"><path d="M12 2 L15 12 L18 15 L15 16 L13 22 L11 22 L9 16 L6 15 L9 12 Z" /></svg>`;
+        
+        let destName = name.split('(').pop().replace(')', '').trim(); 
+
+        return L.divIcon({ 
+            className: 'bg-transparent', 
+            html: `<div style="position: relative;">
+                       <div class="custom-icon" style="width:30px; height:30px; filter: drop-shadow(0 0 8px ${color});">${svg}</div>
+                       <div class="target-label">
+                           <div class="name">${typeLabel}</div>
+                           <div class="speed">${speed} км/г</div>
+                           <div style="color: #fff; font-size: 11px;">${destName}</div>
+                       </div>
+                   </div>`, 
+            iconSize: [30, 30], iconAnchor: [15, 15] 
+        });
+    }
+
+    function animateMarker(marker, newLatLng, prevLat, prevLng) {
+        const start = marker.getLatLng();
+        const duration = 2000; 
+        const startTime = performance.now();
+        
+        if (prevLat && prevLng) {
+            const dLon = (newLatLng[1] - prevLng) * Math.PI / 180;
+            const y = Math.sin(dLon) * Math.cos(newLatLng[0] * Math.PI / 180);
+            const x = Math.cos(prevLat * Math.PI / 180) * Math.sin(newLatLng[0] * Math.PI / 180) - Math.sin(prevLat * Math.PI / 180) * Math.cos(newLatLng[0] * Math.PI / 180) * Math.cos(dLon);
+            const angle = (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
+            
+            const iconDiv = marker._icon.querySelector('.custom-icon');
+            if (iconDiv) iconDiv.style.transform = `rotate(${angle}deg)`;
+        }
+
+        function step(time) {
+            const p = Math.min(1, (time - startTime) / duration);
+            marker.setLatLng([start.lat + (newLatLng[0] - start.lat) * p, start.lng + (newLatLng[1] - start.lng) * p]);
+            if (p < 1) requestAnimationFrame(step);
+        }
+        requestAnimationFrame(step);
+    }
+
+    function updateTargets(targets) {
+        allTargetsData = targets;
+        document.getElementById('total-targets').innerText = targets.length;
+        
+        let counts = { drone: 0, jet_drone: 0, cruise_missile: 0, ballistic: 0 };
+        const activeIds = targets.map(t => t.id);
+
+        targets.forEach(p => {
+            if (counts[p.type] !== undefined) counts[p.type]++;
+            
+            const latlng = [p.lat, p.lng];
+            const icon = getIcon(p.type, p.name, p.speed_kmh);
+            
+            if (currentTargets[p.id]) {
+                animateMarker(currentTargets[p.id], latlng, p.prev_lat, p.prev_lng);
+                currentTargets[p.id].setIcon(icon);
+            } else {
+                const marker = L.marker(latlng, { icon }).addTo(targetLayer);
+                marker.bindPopup(`<b>${p.name}</b><br>${p.speed_kmh} км/г<br>До цілі: ~${p.eta_mins} хв`);
+                currentTargets[p.id] = marker;
+            }
+        });
+
+        document.getElementById('count-drone').innerText = counts.drone;
+        document.getElementById('count-jet').innerText = counts.jet_drone;
+        document.getElementById('count-cruise').innerText = counts.cruise_missile;
+        document.getElementById('count-ballistic').innerText = counts.ballistic;
+
+        for (let id in currentTargets) {
+            if (!activeIds.includes(id)) {
+                targetLayer.removeLayer(currentTargets[id]);
+                delete currentTargets[id];
+            }
+        }
+    }
+
+    function updateLog(history) {
+        const logHtml = history.slice(0, 30).map(e => {
+            let timeString = new Date(e.time).toLocaleTimeString('uk-UA', {hour: '2-digit', minute:'2-digit'});
+            let targetType = e.type === 'ballistic' ? 'Балістика' : (e.type === 'cruise_missile' ? 'Крилата' : 'Шахед');
+            return `
+                <div class="event-item">
+                    <span style="color:#666;">[${timeString}]</span> 
+                    <span style="color:#00ff66;">@${e.source || 'Невідомо'}</span>
+                    <span style="color:#888;">→</span>
+                    <span style="color:#ff4d4d;">${targetType}</span>
+                    <span style="color:#ffcc00;">→ ${e.region}</span>
+                </div>
+            `;
+        }).join('');
+        document.getElementById('tab-events').innerHTML = logHtml || '<div style="color: #444; text-align: center; padding: 10px;">[ Очікування даних... ]</div>';
+    }
+
+    function connectWS() {
+        const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const wsUrl = `${protocol}//${location.hostname}/ws`; // <--- ВАЖНОЕ ИЗМЕНЕНИЕ (порт 80/443)
+        
+        console.log("Connecting to WebSocket:", wsUrl);
+        const ws = new WebSocket(wsUrl);
+
+        ws.onopen = () => { console.log("WebSocket Connected"); };
+        ws.onmessage = (msg) => {
+            const data = JSON.parse(msg.data);
+            if (data.type === "init" || data.type === "targets_update") {
+                updateTargets(data.targets);
+                if (data.history) updateLog(data.history);
+            }
+        };
+        ws.onclose = () => {
+            console.log("WebSocket Disconnected. Retrying...");
+            setTimeout(connectWS, 3000);
+        };
+    }
+
+    loadCities();
+    connectWS();
+</script>
+</body>
+</html>
